@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023, 2025 Oracle and/or its affiliates.
+ * Copyright (c) 2023, 2026 Oracle and/or its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -189,10 +189,7 @@ class HelidonConnector implements Connector {
                 .uri(uri);
 
         // map request headers
-        request.getRequestHeaders().forEach((key, value) -> {
-            String[] values = value.toArray(new String[0]);
-            httpRequest.header(HeaderNames.create(key), values);
-        });
+        copyHeaders(request, httpRequest);
 
         // request config
         Boolean followRedirects = request.resolveProperty(FOLLOW_REDIRECTS, Boolean.class);
@@ -223,6 +220,11 @@ class HelidonConnector implements Connector {
         }
 
         return httpRequest;
+    }
+
+    private static void copyHeaders(ClientRequest request, HttpClientRequest httpRequest) {
+        request.getRequestHeaders()
+                .forEach((name, values) -> httpRequest.header(HeaderNames.create(name), values));
     }
 
     /**
@@ -288,7 +290,10 @@ class HelidonConnector implements Connector {
 
         if (request.hasEntity()) {
             httpResponse = httpRequest.outputStream(os -> {
-                request.setStreamProvider(length -> os);
+                request.setStreamProvider(length -> {
+                    copyHeaders(request, httpRequest);
+                    return os;
+                });
                 request.writeEntity();
             });
         } else {

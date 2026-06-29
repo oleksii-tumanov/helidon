@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023, 2025 Oracle and/or its affiliates.
+ * Copyright (c) 2023, 2026 Oracle and/or its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,6 +16,9 @@
 
 package io.helidon.webclient.api;
 
+import java.io.FilterOutputStream;
+import java.io.IOException;
+import java.io.OutputStream;
 import java.net.UnixDomainSocketAddress;
 import java.util.List;
 import java.util.Map;
@@ -23,7 +26,10 @@ import java.util.Optional;
 
 import io.helidon.common.configurable.LruCache;
 import io.helidon.common.socket.HelidonSocket;
+import io.helidon.http.ClientRequestHeaders;
+import io.helidon.http.Headers;
 import io.helidon.http.Method;
+import io.helidon.http.WritableHeaders;
 import io.helidon.webclient.spi.HttpClientSpi;
 
 /**
@@ -97,7 +103,11 @@ public class HttpClientRequest extends ClientRequestBase<HttpClientRequest, Http
 
     @Override
     protected HttpClientResponse doOutputStream(OutputStreamHandler outputStreamConsumer) {
-        return discoverHttpImplementation().outputStream(outputStreamConsumer);
+        // Output handlers may update generic request headers after the protocol request is created.
+        Headers initialHeaders = WritableHeaders.create(headers());
+        ClientRequest<?> protocolRequest = discoverHttpImplementation();
+        return protocolRequest.outputStream(outputStream -> outputStreamConsumer.handle(
+                new HeaderSyncOutputStream(outputStream, initialHeaders, headers(), protocolRequest.headers())));
     }
 
     private ClientRequest<?> discoverHttpImplementation() {
@@ -223,5 +233,51 @@ public class HttpClientRequest extends ClientRequestBase<HttpClientRequest, Http
 
         throw new IllegalArgumentException("Cannot handle request to " + resolvedUri + ", did not discover any HTTP version "
                                                    + "willing to handle it. HTTP versions supported: " + clients.keySet());
+    }
+
+    private static final class HeaderSyncOutputStream extends FilterOutputStream {
+        private final Headers initialHeaders;
+        private final ClientRequestHeaders sourceHeaders;
+        private final ClientRequestHeaders targetHeaders;
+        private boolean headersSynced;
+
+        private HeaderSyncOutputStream(OutputStream delegate,
+                                       Headers initialHeaders,
+                                       ClientRequestHeaders sourceHeaders,
+                                       ClientRequestHeaders targetHeaders) {
+            super(delegate);
+            this.initialHeaders = initialHeaders;
+            this.sourceHeaders = sourceHeaders;
+            this.targetHeaders = targetHeaders;
+        }
+
+        @Override
+        public void write(int data) throws IOException {
+            syncHeaders();
+            out.write(data);
+        }
+
+        @Override
+        public void write(byte[] data, int offset, int length) throws IOException {
+            syncHeaders();
+            out.write(data, offset, length);
+        }
+
+        @Override
+        public void close() throws IOException {
+            syncHeaders();
+            super.close();
+        }
+
+        private void syncHeaders() {
+            if (!headersSynced) {
+                sourceHeaders.forEach(header -> {
+                    if (!initialHeaders.contains(header)) {
+                        targetHeaders.set(header);
+                    }
+                });
+                headersSynced = true;
+            }
+        }
     }
 }
